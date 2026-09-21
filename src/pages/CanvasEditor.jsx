@@ -151,18 +151,25 @@ export default function CanvasEditor() {
     }
   }
 
-  /* ---------- Upgraded MS Paint Flood Fill Algorithm with Boundary Tolerance ---------- */
-  const fillBucket = (fc, pointer, hexColor) => {
-    const offscreen = fc.toCanvasElement({ multiplier: 1 });
-    const width = offscreen.width;
-    const height = offscreen.height;
+  /* ---------- Fixed MS Paint Flood Fill Algorithm with Viewport Mapping ---------- */
+  const fillBucket = (fc, evt, hexColor) => {
+    const element = fc.lowerCanvasEl;
+    const width = element.width;
+    const height = element.height;
+
+    const canvasCopy = document.createElement('canvas');
+    canvasCopy.width = width;
+    canvasCopy.height = height;
+    const ctx = canvasCopy.getContext('2d', { willReadFrequently: true });
     
-    const offCtx = offscreen.getContext('2d', { willReadFrequently: true });
-    const imgData = offCtx.getImageData(0, 0, width, height);
+    ctx.drawImage(element, 0, 0);
+
+    const imgData = ctx.getImageData(0, 0, width, height);
     const data = imgData.data;
 
-    const startX = Math.round(pointer.x);
-    const startY = Math.round(pointer.y);
+    const pointer = fc.getPointer(evt, true);
+    const startX = Math.round(pointer.x * fc.RetinaScale);
+    const startY = Math.round(pointer.y * fc.RetinaScale);
 
     if (startX < 0 || startX >= width || startY < 0 || startY >= height) return;
 
@@ -180,20 +187,18 @@ export default function CanvasEditor() {
 
     if (startR === fillR && startG === fillG && startB === fillB && startA === fillA) return;
 
-    // Increased tolerance threshold to account for pen smoothing/anti-aliasing lines
     const matchStartColor = (pos) => {
       const r = data[pos];
       const g = data[pos+1];
       const b = data[pos+2];
       const a = data[pos+3];
 
-      // Treat dark or solid line pixels as hard boundaries
-      if (r < 80 && g < 80 && b < 80 && a > 150) return false;
+      if (r < 50 && g < 50 && b < 50 && a > 120) return false;
 
-      return Math.abs(r - startR) < 40 && 
-             Math.abs(g - startG) < 40 && 
-             Math.abs(b - startB) < 40 && 
-             Math.abs(a - startA) < 40;
+      return Math.abs(r - startR) < 50 && 
+             Math.abs(g - startG) < 50 && 
+             Math.abs(b - startB) < 50 && 
+             Math.abs(a - startA) < 50;
     };
 
     const resultCanvas = document.createElement('canvas');
@@ -269,6 +274,8 @@ export default function CanvasEditor() {
       img.set({
         left: 0,
         top: 0,
+        scaleX: 1 / fc.RetinaScale,
+        scaleY: 1 / fc.RetinaScale,
         selectable: true,
         evented: true,
       });
@@ -361,8 +368,7 @@ export default function CanvasEditor() {
       const evt = opt.e
       
       if (fc.__currentTool === 'bucket') {
-        const pointer = fc.getPointer(evt);
-        fillBucket(fc, pointer, fillColor);
+        fillBucket(fc, evt, fillColor);
         return;
       }
       
@@ -400,11 +406,17 @@ export default function CanvasEditor() {
         if (!isActive) return;
 
         if (!data) {
-          setNotFound(true)
-          return
-        }
-        
-        if (data.json) {
+          // Auto-initialize document in Firestore so shared links never throw 404
+          const initialPayload = {
+            objects: [],
+            background: "",
+            customWidth: canvasSize.width,
+            customHeight: canvasSize.height,
+            pageStyle: pageStyle,
+            canvasBgColor: bgColor
+          }
+          await saveCanvas(canvasId, JSON.stringify(initialPayload))
+        } else if (data.json) {
           const parsedData = JSON.parse(data.json)
           
           if (parsedData.customWidth && parsedData.customHeight) {
