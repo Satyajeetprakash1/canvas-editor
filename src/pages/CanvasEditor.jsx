@@ -9,6 +9,15 @@ const AUTOSAVE_DELAY = 700
 const DEFAULT_W = 794
 const DEFAULT_H = 1123
 
+const hexToRgb = (hex) => {
+  let result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? {
+    r: parseInt(result[1], 16),
+    g: parseInt(result[2], 16),
+    b: parseInt(result[3], 16)
+  } : { r: 0, g: 0, b: 0 };
+};
+
 export default function CanvasEditor() {
   const { canvasId } = useParams()
   const navigate = useNavigate()
@@ -33,7 +42,8 @@ export default function CanvasEditor() {
   const [pageStyle, setPageStyle] = useState('fullscreen-dots') 
   const [bgColor, setBgColor] = useState('#ffffff') 
   
-  // AI Generation States
+  const [zoom, setZoom] = useState(100)
+  
   const [showAiBar, setShowAiBar] = useState(false)
   const [aiPrompt, setAiPrompt] = useState('')
   const [isAiLoading, setIsAiLoading] = useState(false)
@@ -66,7 +76,7 @@ export default function CanvasEditor() {
     setSaveState('saving')
     try {
       const payload = {
-        ...fc.toJSON(),
+        ...fc.toJSON(['globalCompositeOperation', 'selectable', 'evented']),
         customWidth: sizeRef.current.width,
         customHeight: sizeRef.current.height,
         pageStyle: styleRef.current,
@@ -107,12 +117,173 @@ export default function CanvasEditor() {
     scheduleSave()
   }
 
+  const handleZoomIn = () => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    let newZoom = fc.getZoom() * 1.2;
+    if (newZoom > 5) newZoom = 5;
+    fc.zoomToPoint({ x: fc.width / 2, y: fc.height / 2 }, newZoom);
+    setZoom(Math.round(newZoom * 100));
+  }
+
+  const handleZoomOut = () => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    let newZoom = fc.getZoom() / 1.2;
+    if (newZoom < 0.1) newZoom = 0.1;
+    fc.zoomToPoint({ x: fc.width / 2, y: fc.height / 2 }, newZoom);
+    setZoom(Math.round(newZoom * 100));
+  }
+
+  const handleObjectScale = (direction) => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    const activeObjects = fc.getActiveObjects();
+    if (activeObjects && activeObjects.length > 0) {
+      const scaleFactor = direction === 'in' ? 1.1 : 0.9;
+      activeObjects.forEach(obj => {
+        obj.scaleX *= scaleFactor;
+        obj.scaleY *= scaleFactor;
+        obj.setCoords();
+      });
+      fc.requestRenderAll();
+      scheduleSave();
+    }
+  }
+
+  /* ---------- Upgraded MS Paint Flood Fill Algorithm with Boundary Tolerance ---------- */
+  const fillBucket = (fc, pointer, hexColor) => {
+    const offscreen = fc.toCanvasElement({ multiplier: 1 });
+    const width = offscreen.width;
+    const height = offscreen.height;
+    
+    const offCtx = offscreen.getContext('2d', { willReadFrequently: true });
+    const imgData = offCtx.getImageData(0, 0, width, height);
+    const data = imgData.data;
+
+    const startX = Math.round(pointer.x);
+    const startY = Math.round(pointer.y);
+
+    if (startX < 0 || startX >= width || startY < 0 || startY >= height) return;
+
+    const startPos = (startY * width + startX) * 4;
+    const startR = data[startPos];
+    const startG = data[startPos + 1];
+    const startB = data[startPos + 2];
+    const startA = data[startPos + 3];
+
+    const rgb = hexToRgb(hexColor);
+    const fillR = rgb.r;
+    const fillG = rgb.g;
+    const fillB = rgb.b;
+    const fillA = 255;
+
+    if (startR === fillR && startG === fillG && startB === fillB && startA === fillA) return;
+
+    // Increased tolerance threshold to account for pen smoothing/anti-aliasing lines
+    const matchStartColor = (pos) => {
+      const r = data[pos];
+      const g = data[pos+1];
+      const b = data[pos+2];
+      const a = data[pos+3];
+
+      // Treat dark or solid line pixels as hard boundaries
+      if (r < 80 && g < 80 && b < 80 && a > 150) return false;
+
+      return Math.abs(r - startR) < 40 && 
+             Math.abs(g - startG) < 40 && 
+             Math.abs(b - startB) < 40 && 
+             Math.abs(a - startA) < 40;
+    };
+
+    const resultCanvas = document.createElement('canvas');
+    resultCanvas.width = width;
+    resultCanvas.height = height;
+    const resultCtx = resultCanvas.getContext('2d');
+    const resultImgData = resultCtx.createImageData(width, height);
+    const resData = resultImgData.data;
+
+    const colorPixel = (pos) => {
+      data[pos] = fillR;
+      data[pos + 1] = fillG;
+      data[pos + 2] = fillB;
+      data[pos + 3] = fillA;
+
+      resData[pos] = fillR;
+      resData[pos + 1] = fillG;
+      resData[pos + 2] = fillB;
+      resData[pos + 3] = fillA;
+    };
+
+    const pixelStack = [[startX, startY]];
+
+    while (pixelStack.length > 0) {
+      const newPos = pixelStack.pop();
+      const x = newPos[0];
+      let y = newPos[1];
+
+      let pixelPos = (y * width + x) * 4;
+      while (y >= 0 && matchStartColor(pixelPos)) {
+        y--;
+        pixelPos -= width * 4;
+      }
+      pixelPos += width * 4;
+      y++;
+
+      let reachLeft = false;
+      let reachRight = false;
+
+      while (y < height && matchStartColor(pixelPos)) {
+        colorPixel(pixelPos);
+
+        if (x > 0) {
+          if (matchStartColor(pixelPos - 4)) {
+            if (!reachLeft) {
+              pixelStack.push([x - 1, y]);
+              reachLeft = true;
+            }
+          } else if (reachLeft) {
+            reachLeft = false;
+          }
+        }
+
+        if (x < width - 1) {
+          if (matchStartColor(pixelPos + 4)) {
+            if (!reachRight) {
+              pixelStack.push([x + 1, y]);
+              reachRight = true;
+            }
+          } else if (reachRight) {
+            reachRight = false;
+          }
+        }
+
+        y++;
+        pixelPos += width * 4;
+      }
+    }
+
+    resultCtx.putImageData(resultImgData, 0, 0);
+
+    fabric.Image.fromURL(resultCanvas.toDataURL(), (img) => {
+      img.set({
+        left: 0,
+        top: 0,
+        selectable: true,
+        evented: true,
+      });
+      fc.add(img);
+      fc.requestRenderAll();
+      scheduleSave();
+    });
+  };
+
   /* ---------- Safe Drag-to-Resize Observer ---------- */
   useEffect(() => {
     if (!wrapperRef.current) return;
     
     const observer = new ResizeObserver((entries) => {
-      if (!loadedRef.current) return; 
+      if (!fabricRef.current) return; 
       
       for (let entry of entries) {
         const newW = Math.round(entry.contentRect.width);
@@ -120,10 +291,7 @@ export default function CanvasEditor() {
         
         setCanvasSize((prev) => {
           if (Math.abs(prev.width - newW) > 2 || Math.abs(prev.height - newH) > 2) {
-            if (fabricRef.current) {
-              fabricRef.current.setDimensions({ width: newW, height: newH });
-            }
-            scheduleSave();
+            fabricRef.current.setDimensions({ width: newW, height: newH });
             return { width: newW, height: newH };
           }
           return prev;
@@ -133,7 +301,7 @@ export default function CanvasEditor() {
     
     observer.observe(wrapperRef.current);
     return () => observer.disconnect();
-  }, [scheduleSave])
+  }, [])
 
   /* ---------- init & load ---------- */
   useEffect(() => {
@@ -150,6 +318,11 @@ export default function CanvasEditor() {
       backgroundColor: 'transparent',
       preserveObjectStacking: true,
     })
+    
+    const originalToJSON = fc.toJSON.bind(fc);
+    fc.toJSON = (propertiesToInclude) => {
+      return originalToJSON([...(propertiesToInclude || []), 'globalCompositeOperation', 'selectable', 'evented']);
+    };
     
     fabricRef.current = fc
     setFcState(fc) 
@@ -173,11 +346,12 @@ export default function CanvasEditor() {
     fc.on('mouse:wheel', function (opt) {
       if (opt.e.ctrlKey || opt.e.metaKey) {
         const delta = opt.e.deltaY
-        let zoom = fc.getZoom()
-        zoom *= 0.999 ** delta
-        if (zoom > 5) zoom = 5 
-        if (zoom < 0.2) zoom = 0.2 
-        fc.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom)
+        let currentZoom = fc.getZoom()
+        currentZoom *= 0.999 ** delta
+        if (currentZoom > 5) currentZoom = 5 
+        if (currentZoom < 0.1) currentZoom = 0.1 
+        fc.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, currentZoom)
+        setZoom(Math.round(currentZoom * 100))
         opt.e.preventDefault()
         opt.e.stopPropagation()
       }
@@ -186,14 +360,12 @@ export default function CanvasEditor() {
     fc.on('mouse:down', function (opt) {
       const evt = opt.e
       
-      if (fc.__currentTool === 'eraser' && opt.target) {
-        fc.remove(opt.target)
-        fc.discardActiveObject()
-        fc.requestRenderAll()
-        scheduleSave()
-        return
+      if (fc.__currentTool === 'bucket') {
+        const pointer = fc.getPointer(evt);
+        fillBucket(fc, pointer, fillColor);
+        return;
       }
-
+      
       if (evt.altKey === true) {
         this.isDragging = true
         this.selection = false
@@ -217,7 +389,7 @@ export default function CanvasEditor() {
     fc.on('mouse:up', function () {
       this.setViewportTransform(this.viewportTransform)
       this.isDragging = false
-      if (fc.__currentTool !== 'eraser' && fc.__currentTool !== 'pen' && fc.__currentTool !== 'highlighter') {
+      if (fc.__currentTool !== 'eraser' && fc.__currentTool !== 'pen' && fc.__currentTool !== 'highlighter' && fc.__currentTool !== 'bucket') {
         this.selection = true
       }
     })
@@ -276,7 +448,6 @@ export default function CanvasEditor() {
     }
   }, [canvasId, scheduleSave]) 
 
-  /* ---------- tools ---------- */
   const hexToRgbA = (hex, alpha) => {
     let c;
     if(/^#([A-Fa-f0-9]{3}){1,2}$/.test(hex)){
@@ -288,6 +459,48 @@ export default function CanvasEditor() {
         return 'rgba('+[(c>>16)&255, (c>>8)&255, c&255].join(',')+','+alpha+')';
     }
     return `rgba(0,0,0,${alpha})`;
+  }
+
+  const createBendableLine = (center, strokeCol, strokeW) => {
+    const path = new fabric.Path('M -75 0 Q 0 0 75 0', {
+      left: center.x,
+      top: center.y,
+      stroke: strokeCol,
+      strokeWidth: strokeW,
+      fill: 'transparent',
+      originX: 'center',
+      originY: 'center',
+      objectCaching: false,
+      padding: 15,
+      perPixelTargetFind: false
+    });
+
+    path.controls.curveControl = new fabric.Control({
+      x: 0,
+      y: 0,
+      cursorStyle: 'pointer',
+      actionHandler: function (eventData, transform, x, y) {
+        const target = transform.target;
+        const m = target.calcTransformMatrix();
+        const invertedM = fabric.util.invertTransform(m);
+        const local = fabric.util.transformPoint({ x: x, y: y }, invertedM);
+        
+        target.path[1][1] = local.x + target.pathOffset.x;
+        target.path[1][2] = local.y + target.pathOffset.y;
+        return true;
+      },
+      render: function (ctx, left, top, styleOverride, fabricObject) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(left, top, 6, 0, 2 * Math.PI, false);
+        ctx.fillStyle = '#4f6ef7';
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+    });
+    
+    return path;
   }
 
   const handleToolChange = (rawToolName) => {
@@ -304,15 +517,15 @@ export default function CanvasEditor() {
       const center = fc.getVpCenter()
       
       if (tool === 'rectangle' || tool === 'rect') {
-        obj = new fabric.Rect({ left: center.x - 80, top: center.y - 50, width: 160, height: 100, fill: fillColor, stroke: strokeColor, strokeWidth: 2, rx: 4, ry: 4 })
+        obj = new fabric.Rect({ left: center.x - 80, top: center.y - 50, width: 160, height: 100, fill: fillColor, stroke: strokeColor, strokeWidth: brushSize, rx: 4, ry: 4 })
       } else if (tool === 'circle') {
-        obj = new fabric.Circle({ left: center.x - 60, top: center.y - 60, radius: 60, fill: fillColor, stroke: strokeColor, strokeWidth: 2 })
+        obj = new fabric.Circle({ left: center.x - 60, top: center.y - 60, radius: 60, fill: fillColor, stroke: strokeColor, strokeWidth: brushSize })
       } else if (tool === 'triangle') {
-        obj = new fabric.Triangle({ left: center.x - 60, top: center.y - 60, width: 120, height: 120, fill: fillColor, stroke: strokeColor, strokeWidth: 2 })
+        obj = new fabric.Triangle({ left: center.x - 60, top: center.y - 60, width: 120, height: 120, fill: fillColor, stroke: strokeColor, strokeWidth: brushSize })
       } else if (tool === 'ellipse') {
-        obj = new fabric.Ellipse({ left: center.x - 80, top: center.y - 50, rx: 80, ry: 50, fill: fillColor, stroke: strokeColor, strokeWidth: 2 })
+        obj = new fabric.Ellipse({ left: center.x - 80, top: center.y - 50, rx: 80, ry: 50, fill: fillColor, stroke: strokeColor, strokeWidth: brushSize })
       } else if (tool === 'line') {
-        obj = new fabric.Line([0, 0, 150, 0], { left: center.x - 75, top: center.y, stroke: strokeColor, strokeWidth: 4 })
+        obj = createBendableLine(center, strokeColor, brushSize);
       } else if (tool === 'text') {
         obj = new fabric.IText('Double-click to edit', { left: center.x - 100, top: center.y - 12, fill: fillColor, fontSize: 24 })
       }
@@ -331,9 +544,14 @@ export default function CanvasEditor() {
       setActiveTool(rawToolName)
       fc.isDrawingMode = (tool === 'pen' || tool === 'eraser' || tool === 'highlighter')
       
-      if (tool === 'eraser') {
+      if (tool === 'bucket') {
+        fc.selection = false;
+        fc.hoverCursor = 'crosshair';
+        fc.forEachObject(obj => obj.set('selectable', false));
+      }
+      else if (tool === 'eraser') {
         const eraserBrush = new fabric.PencilBrush(fc)
-        eraserBrush.color = 'rgba(255, 255, 255, 0.5)' 
+        eraserBrush.color = 'rgba(255, 255, 255, 1)' 
         eraserBrush.width = brushSize * 4
         fc.freeDrawingBrush = eraserBrush
 
@@ -375,7 +593,9 @@ export default function CanvasEditor() {
   const handleBrushSizeChange = (newSize) => {
     setBrushSize(newSize)
     const fc = fabricRef.current
-    if (fc && fc.freeDrawingBrush) {
+    if (!fc) return;
+
+    if (fc.freeDrawingBrush) {
       if (fc.__currentTool === 'eraser') {
         fc.freeDrawingBrush.width = newSize * 4;
       } else if (fc.__currentTool === 'highlighter') {
@@ -383,6 +603,17 @@ export default function CanvasEditor() {
       } else {
         fc.freeDrawingBrush.width = newSize;
       }
+    }
+
+    const activeObjects = fc.getActiveObjects();
+    if (activeObjects && activeObjects.length > 0) {
+      activeObjects.forEach(obj => {
+        if (obj.type !== 'i-text' && obj.type !== 'text') {
+          obj.set('strokeWidth', newSize);
+        }
+      });
+      fc.requestRenderAll();
+      scheduleSave();
     }
   }
 
@@ -484,7 +715,6 @@ export default function CanvasEditor() {
     e.target.value = null
   }
 
-  // FIXED: Using a reliable CORS proxy and standard Fabric v6 loading
   const handleAIGenerate = async () => {
     if (!aiPrompt || !fabricRef.current) return;
     setIsAiLoading(true);
@@ -493,11 +723,9 @@ export default function CanvasEditor() {
       const promptSafe = encodeURIComponent(aiPrompt);
       const seed = Math.floor(Math.random() * 1000000);
       
-      // Route through a reliable CORS proxy to prevent Canvas Tainting
       const imageUrl = `https://image.pollinations.ai/prompt/${promptSafe}?width=512&height=512&nologo=true&seed=${seed}`;
       const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(imageUrl)}`;
       
-      // Fabric v6 native async loading with anonymous crossOrigin
       const img = await fabric.Image.fromURL(proxyUrl, { crossOrigin: 'anonymous' });
       
       img.scaleToWidth(400);
@@ -649,6 +877,18 @@ export default function CanvasEditor() {
               <input type="number" disabled={isFullScreen} value={canvasSize?.height || 1123} onChange={(e) => handleCanvasSizeChange({ ...canvasSize, height: parseInt(e.target.value) || 100 })} className="size-input" />
             </div>
           </div>
+          
+          <div className="tool-sep" style={{ margin: '0 8px', height: '16px' }}></div>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <button className="tool-btn" onClick={handleZoomOut} style={{ width: '28px', height: '28px' }} data-tooltip-bottom="Zoom Out">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+            <span style={{ fontSize: '12px', minWidth: '40px', textAlign: 'center', color: 'var(--text)' }}>{zoom}%</span>
+            <button className="tool-btn" onClick={handleZoomIn} style={{ width: '28px', height: '28px' }} data-tooltip-bottom="Zoom In">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+          </div>
         </div>
         
         <div className="right">
@@ -708,7 +948,6 @@ export default function CanvasEditor() {
             borderRadius: isFullScreen ? '0' : undefined,
             resize: isFullScreen ? 'none' : 'both',
             boxShadow: isFullScreen ? 'none' : undefined,
-            // FIXED: Applies to ALL page styles flawlessly
             backgroundColor: bgColor !== '#ffffff' ? bgColor : undefined
           }}
         >
@@ -725,6 +964,7 @@ export default function CanvasEditor() {
         onStrokeColorChange={handleStrokeColorChange}
         brushSize={brushSize}
         onBrushSizeChange={handleBrushSizeChange}
+        onObjectScale={handleObjectScale}
         onDelete={handleDelete}
         onUndo={undo}
         onRedo={redo}

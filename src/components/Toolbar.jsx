@@ -7,6 +7,7 @@ export default function Toolbar({
   onStrokeColorChange,
   brushSize,
   onBrushSizeChange,
+  onObjectScale,
   onDelete,
   onUndo,
   onRedo,
@@ -22,7 +23,6 @@ export default function Toolbar({
 }) {
   return (
     <>
-      {/* Floating AI Input Bar */}
       <div className={`ai-prompt-bar ${showAiBar ? 'visible' : ''}`}>
         <input 
           type="text" 
@@ -48,6 +48,11 @@ export default function Toolbar({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
           </button>
           
+          {/* New Paint Bucket Tool */}
+          <button className={`tool-btn ${activeTool === 'bucket' ? 'active' : ''}`} onClick={() => onToolChange('bucket')} data-tooltip="Paint Bucket (B)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 11l-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/><path d="M5 2l5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-3.6 2-4 .3.4 2 2.4 2 4Z"/></svg>
+          </button>
+          
           <button className={`tool-btn ${activeTool === 'highlighter' ? 'active' : ''}`} onClick={() => onToolChange('highlighter')} data-tooltip="Highlighter (H)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/><path d="M15 5l4 4"/></svg>
           </button>
@@ -56,11 +61,9 @@ export default function Toolbar({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 20H7L3 16C2.5 15.5 2.5 14.5 3 14L13 4C13.5 3.5 14.5 3.5 15 4L20 9C20.5 9.5 20.5 10.5 20 11L11 20"/><path d="M17 14L7 20"/></svg>
           </button>
           
-          {(activeTool === 'pen' || activeTool === 'highlighter' || activeTool === 'eraser') && (
-            <div className="brush-slider-container" data-tooltip="Adjust Brush Size">
-              <input type="range" className="brush-slider" min="1" max="50" value={brushSize} onChange={(e) => onBrushSizeChange(parseInt(e.target.value))} />
-            </div>
-          )}
+          <div className="brush-slider-container" data-tooltip="Adjust Stroke/Brush Size">
+            <input type="range" className="brush-slider" min="1" max="50" value={brushSize} onChange={(e) => onBrushSizeChange(parseInt(e.target.value))} />
+          </div>
 
           <button className={`tool-btn ${activeTool === 'text' ? 'active' : ''}`} onClick={() => onToolChange('text')} data-tooltip="Add Text (T)" style={{ marginLeft: '4px' }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
@@ -82,7 +85,6 @@ export default function Toolbar({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           </label>
 
-          {/* AI Diagram Generation Toggle */}
           <button 
             className={`tool-btn ${showAiBar ? 'active' : ''}`} 
             onClick={() => setShowAiBar(!showAiBar)} 
@@ -90,6 +92,17 @@ export default function Toolbar({
             style={{ color: 'var(--accent)' }}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l3 6 6 3-6 3-3 6-3-6-6-3 6-3z"/><path d="M19 4l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/></svg>
+          </button>
+        </div>
+
+        <div className="tool-sep"></div>
+
+        <div className="tool-group">
+          <button className="tool-btn" onClick={() => onObjectScale('out')} data-tooltip="Shrink Object">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+          </button>
+          <button className="tool-btn" onClick={() => onObjectScale('in')} data-tooltip="Enlarge Object">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
           </button>
         </div>
 

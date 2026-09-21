@@ -1,77 +1,81 @@
-import { useCallback, useEffect, useRef, useReducer } from 'react'
+import { useState, useCallback, useRef } from 'react'
 
-/**
- * Undo/redo via a snapshot stack of canvas JSON.
- * Snapshots are pushed on object:added / object:modified / object:removed,
- * throttled so a drag-resize doesn't flood the stack.
- */
+const MAX_STACK = 50
+
 export default function useCanvasHistory(canvas) {
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
+  
   const undoStack = useRef([])
   const redoStack = useRef([])
-  const throttling = useRef(false)
-  
-  // CRITICAL FIX: Lock prevents loadFromJSON from triggering new snapshots
-  const isLocked = useRef(false) 
-  
-  const [, forceRender] = useReducer((x) => x + 1, 0)
+  const isPerformingAction = useRef(false)
 
-  const snapshot = useCallback(() => {
-    // If we are currently undoing/redoing, ignore the canvas mutation events
-    if (!canvas || throttling.current || isLocked.current) return
+  // Push a state snapshot
+  const saveState = useCallback(() => {
+    if (!canvas || isPerformingAction.current) return
+    const json = JSON.stringify(canvas.toJSON(['globalCompositeOperation', 'selectable', 'evented']))
     
-    throttling.current = true
-    setTimeout(() => (throttling.current = false), 300)
+    // Avoid duplicate consecutive saves
+    const currentTop = undoStack.current[undoStack.current.length - 1]
+    if (currentTop === json) return
+
+    undoStack.current.push(json)
+    if (undoStack.current.length > MAX_STACK) {
+      undoStack.current.shift()
+    }
     
-    undoStack.current.push(JSON.stringify(canvas.toJSON()))
-    if (undoStack.current.length > 50) undoStack.current.shift()
-    
+    // Clear redo stack on new actions
     redoStack.current = []
-    forceRender()
+    setCanUndo(undoStack.current.length > 1)
+    setCanRedo(false)
   }, [canvas])
 
-  const undo = useCallback(async () => {
-    if (!canvas || undoStack.current.length === 0) return
-    
-    isLocked.current = true // Lock the event listeners
-    
-    redoStack.current.push(JSON.stringify(canvas.toJSON()))
-    const prev = undoStack.current.pop()
-    
-    // Parse the JSON string into an object for Fabric v6 compatibility
-    await canvas.loadFromJSON(JSON.parse(prev))
-    canvas.renderAll()
-    
-    isLocked.current = false // Unlock the event listeners
-    forceRender()
-  }, [canvas])
-
-  const redo = useCallback(async () => {
-    if (!canvas || redoStack.current.length === 0) return
-    
-    isLocked.current = true // Lock the event listeners
-    
-    undoStack.current.push(JSON.stringify(canvas.toJSON()))
-    const next = redoStack.current.pop()
-    
-    // Parse the JSON string into an object for Fabric v6 compatibility
-    await canvas.loadFromJSON(JSON.parse(next))
-    canvas.renderAll()
-    
-    isLocked.current = false // Unlock the event listeners
-    forceRender()
-  }, [canvas])
-
-  useEffect(() => {
-    if (!canvas) return
-    const events = ['object:added', 'object:modified', 'object:removed']
-    events.forEach((e) => canvas.on(e, snapshot))
-    return () => events.forEach((e) => canvas.off(e, snapshot))
-  }, [canvas, snapshot])
-
-  return { 
-    undo, 
-    redo, 
-    canUndo: undoStack.current.length > 0, 
-    canRedo: redoStack.current.length > 0 
+  // Attach auto-listeners
+  if (canvas && !canvas.__historyInitialized) {
+    canvas.__historyInitialized = true
+    canvas.on('object:added', () => saveState())
+    canvas.on('object:modified', () => saveState())
+    canvas.on('object:removed', () => saveState())
+    canvas.on('path:created', () => saveState())
+    // Initial snapshot baseline
+    if (undoStack.current.length === 0) {
+      undoStack.current.push(JSON.stringify(canvas.toJSON(['globalCompositeOperation', 'selectable', 'evented'])))
+      setCanUndo(false)
+    }
   }
+
+  const undo = useCallback(() => {
+    if (!canvas || undoStack.current.length <= 1) return
+    isPerformingAction.current = true
+
+    const currentState = undoStack.current.pop()
+    redoStack.current.push(currentState)
+
+    const previousState = undoStack.current[undoStack.current.length - 1]
+    
+    canvas.loadFromJSON(previousState, () => {
+      // Force clearing composite buffers to prevent white cast artifacts
+      canvas.requestRenderAll()
+      isPerformingAction.current = false
+      setCanUndo(undoStack.current.length > 1)
+      setCanRedo(redoStack.current.length > 0)
+    })
+  }, [canvas])
+
+  const redo = useCallback(() => {
+    if (!canvas || redoStack.current.length === 0) return
+    isPerformingAction.current = true
+
+    const nextState = redoStack.current.pop()
+    undoStack.current.push(nextState)
+
+    canvas.loadFromJSON(nextState, () => {
+      canvas.requestRenderAll()
+      isPerformingAction.current = false
+      setCanUndo(undoStack.current.length > 1)
+      setCanRedo(redoStack.current.length > 0)
+    })
+  }, [canvas])
+
+  return { undo, redo, canUndo, canRedo, saveState }
 }
